@@ -2,6 +2,8 @@
 
 A sophisticated weather station display for E-Paper displays, designed specifically for Venice, Italy. This project combines real-time weather data from OpenWeatherMap with beautifully rendered weather icons and a detailed wind rose compass on an E-Ink display.
 
+![Bea-ink Preview](Bea-ink.jpg)
+
 ## Features
 
 - Real-time weather data display including:
