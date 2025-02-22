@@ -11,335 +11,451 @@ from datetime import datetime
 from math import cos, sin, radians
 import epd7in5_V2
 from PIL import Image, ImageDraw, ImageFont
+import xml.etree.ElementTree as ET
+
+
+# Configurazione logging in italiano
+class FormattatoreLogs(logging.Formatter):
+    def format(self, record):
+        colori = {
+            logging.DEBUG: '\033[36m',     # Ciano per DEBUG
+            logging.INFO: '\033[32m',      # Verde per INFO
+            logging.WARNING: '\033[33m',   # Giallo per AVVISO
+            logging.ERROR: '\033[31m',     # Rosso per ERRORE
+            logging.CRITICAL: '\033[31m\033[1m'  # Rosso brillante per CRITICO
+        }
+        reset = '\033[0m'
+
+        livelli_tradotti = {
+            'DEBUG': 'DEBUG',
+            'INFO': 'INFO',
+            'WARNING': 'AVVISO',
+            'ERROR': 'ERRORE',
+            'CRITICAL': 'CRITICO'
+        }
+
+        colore = colori.get(record.levelno, '')
+        livello_tradotto = livelli_tradotti.get(record.levelname, record.levelname)
+        record.levelname = f'{colore}{livello_tradotto:<8}{reset}'
+
+        if 'connectionpool' in record.name:
+            if 'Starting new' in record.msg:
+                return None
+            if 'GET' in str(record.msg):
+                parti = str(record.msg).split('"')
+                if len(parti) >= 2:
+                    url = parti[1].split(' ')[1]
+                    stato = parti[-2]
+                    return f"{record.levelname} Richiesta HTTP: {url} → Stato: {sta
+to}"
+
+        if 'e-Paper' in str(record.msg):
+            msg_tradotto = str(record.msg).replace('busy', 'occupato').replace('rel
+ease', 'libero')
+            return f"{record.levelname} Display: {msg_tradotto}"
+
+        msg = str(record.msg)
+        msg = msg.replace('Starting new HTTP connection', 'Avvio nuova connessione
+HTTP') \
+                 .replace('close 5V, Module enters 0 power consumption', 'chiusura
+5V, Modulo entra in risparmio energetico') \
+                 .replace('spi end', 'fine comunicazione SPI')
+
+        return f"{record.levelname} {record.name}: {msg}"
+
+def configura_logging():
+    logger_root = logging.getLogger()
+    logger_root.setLevel(logging.INFO)
+
+    for gestore in logger_root.handlers[:]:
+        logger_root.removeHandler(gestore)
+
+    gestore_console = logging.StreamHandler(sys.stdout)
+    gestore_console.setFormatter(FormattatoreLogs())
+    logger_root.addHandler(gestore_console)
+
+    logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
 
 # Configurazione logging
-logging.basicConfig(level=logging.DEBUG)
+configura_logging()
 
-# Configurazione OpenWeatherMap
-OPENWEATHER_API_KEY = "mettiquilatuaAPI_KEY"
-CITY = "Venice,IT"
+# Configurazione API
+CHIAVE_OPENWEATHER = "605915fb16ba43e55a8ff6432939a79f"
+CITTA = "Venice,IT"
 
-def get_wind_name(degrees):
-    """Restituisce il nome del vento in base ai gradi"""
-    if degrees > 337.5 or degrees <= 22.5:
-        return "Tramontana"
-    elif degrees <= 67.5:
-        return "Grecale"
-    elif degrees <= 112.5:
-        return "Levante"
-    elif degrees <= 157.5:
-        return "Scirocco"
-    elif degrees <= 202.5:
-        return "Ostro"
-    elif degrees <= 247.5:
-        return "Libeccio"
-    elif degrees <= 292.5:
-        return "Ponente"
-    elif degrees <= 337.5:
-        return "Maestrale"
+def ottieni_ultima_notizia():
+    """Recupera l'ultima notizia dal feed RSS di ANSA"""
+    try:
+        url = "https://www.ansa.it/sito/notizie/topnews/topnews_rss.xml"
+        risposta = requests.get(url, timeout=5)
+        root = ET.fromstring(risposta.content)
 
+        # Trova il primo item nel feed
+        primo_item = root.find(".//item")
+        if primo_item is not None:
+            titolo = primo_item.find("title").text
+            data = primo_item.find("pubDate").text
+            return {
+                'titolo': titolo,
+                'data': data
+            }
+    except Exception as e:
+        logging.error(f"Errore nel recupero feed RSS: {e}")
+        return None
 
-def draw_sun_icon(draw, x, y, size):
+def disegna_barra_notizie(disegno, y, larghezza_display, caratteri):
+    """Disegna la barra delle notizie in basso"""
+    notizia = ottieni_ultima_notizia()
+
+    # Disegna prima la linea separatrice
+    disegno.line([(20, y-10), (larghezza_display-20, y-10)], fill=0, width=1)
+
+    # Disegna l'ora corrente a destra
+    ora_corrente = datetime.now().strftime("%d/%m/%Y %H:%M")
+    larghezza_ora = 180  # Spazio riservato per la data/ora
+    disegno.text((larghezza_display-larghezza_ora-20, y), ora_corrente, font=caratt
+eri['piccolo'], fill=0)
+
+    if notizia:
+        # Calcola lo spazio disponibile per il testo (considerando il margine sinis
+tro e lo spazio per l'ora)
+        spazio_disponibile = larghezza_display - larghezza_ora - 80  # 40px margine
+ sinistro + 20px margine tra news e ora + 20px margine destro
+
+        # Tronca il titolo se necessario
+        titolo = notizia['titolo']
+        pixel_per_carattere = 10  # Stima approssimativa
+        lunghezza_massima = spazio_disponibile // pixel_per_carattere
+
+        if len(titolo) > lunghezza_massima:
+            titolo = titolo[:lunghezza_massima-3] + "..."
+
+        # Disegna il titolo della notizia
+        disegno.text((40, y), f"ANSA: {titolo}", font=caratteri['piccolo'], fill=0)
+
+def disegna_icona_sole(disegno, x, y, dimensione):
     """Disegna un'icona del sole"""
-    # Cerchio centrale
-    radius = size // 3
-    draw.ellipse([x-radius, y-radius, x+radius, y+radius], outline=0, width=2)
-
-    # Raggi
-    ray_length = size // 2
+    raggio = dimensione // 3
+    disegno.ellipse([x-raggio, y-raggio, x+raggio, y+raggio], outline=0, width=2)
+    lunghezza_raggio = dimensione // 2
     for i in range(8):
-        angle = i * 45
-        rad_angle = radians(angle)
-        start_x = x + cos(rad_angle) * (radius + 5)
-        start_y = y + sin(rad_angle) * (radius + 5)
-        end_x = x + cos(rad_angle) * ray_length
-        end_y = y + sin(rad_angle) * ray_length
-        draw.line([(start_x, start_y), (end_x, end_y)], fill=0, width=2)
+        angolo = i * 45
+        angolo_rad = radians(angolo)
+        inizio_x = x + cos(angolo_rad) * (raggio + 5)
+        inizio_y = y + sin(angolo_rad) * (raggio + 5)
+        fine_x = x + cos(angolo_rad) * lunghezza_raggio
+        fine_y = y + sin(angolo_rad) * lunghezza_raggio
+        disegno.line([(inizio_x, inizio_y), (fine_x, fine_y)], fill=0, width=2)
 
-def draw_cloud_icon(draw, x, y, size):
+def disegna_icona_nuvola(disegno, x, y, dimensione):
     """Disegna un'icona della nuvola"""
-    cloud_height = size // 2
-    cloud_width = size * 3 // 4
+    altezza_nuvola = dimensione // 2
+    larghezza_nuvola = dimensione * 3 // 4
+    disegno.ellipse([x, y, x+larghezza_nuvola, y+altezza_nuvola], outline=0, width=
+2)
+    disegno.ellipse([x+larghezza_nuvola//2, y-altezza_nuvola//3, x+larghezza_nuvola
+, y+altezza_nuvola//2], outline=0, width=2)
+    disegno.ellipse([x+larghezza_nuvola//4, y-altezza_nuvola//4, x+larghezza_nuvola
+*3//4, y+altezza_nuvola//2], outline=0, width=2)
 
-    # Base della nuvola
-    draw.ellipse([x, y, x+cloud_width, y+cloud_height], outline=0, width=2)
-    draw.ellipse([x+cloud_width//2, y-cloud_height//3, x+cloud_width, y+cloud_height//2], outline=0, width=2)
-    draw.ellipse([x+cloud_width//4, y-cloud_height//4, x+cloud_width*3//4, y+cloud_height//2], outline=0, width=2)
-
-def draw_rain_icon(draw, x, y, size):
+def disegna_icona_pioggia(disegno, x, y, dimensione):
     """Disegna un'icona della pioggia"""
-    # Prima disegna una nuvola più piccola
-    draw_cloud_icon(draw, x, y, size * 2 // 3)
-
-    # Aggiungi gocce di pioggia
-    drop_start_y = y + size // 2
+    disegna_icona_nuvola(disegno, x, y, dimensione * 2 // 3)
+    inizio_goccia_y = y + dimensione // 2
     for i in range(3):
-        drop_x = x + (i * size // 3)
-        draw.line([(drop_x, drop_start_y), (drop_x - size//6, drop_start_y + size//3)], fill=0, width=2)
+        goccia_x = x + (i * dimensione // 3)
+        disegno.line([(goccia_x, inizio_goccia_y), (goccia_x - dimensione//6, inizi
+o_goccia_y + dimensione//3)], fill=0, width=2)
 
-def draw_snow_icon(draw, x, y, size):
+def disegna_icona_neve(disegno, x, y, dimensione):
     """Disegna un'icona della neve"""
-    # Prima disegna una nuvola più piccola
-    draw_cloud_icon(draw, x, y, size * 2 // 3)
-
-    # Aggiungi fiocchi di neve
-    flake_start_y = y + size // 2
+    disegna_icona_nuvola(disegno, x, y, dimensione * 2 // 3)
+    inizio_fiocco_y = y + dimensione // 2
     for i in range(3):
-        flake_x = x + (i * size // 3)
-        flake_y = flake_start_y + size // 3
-        flake_size = size // 8
-        draw.ellipse([flake_x-flake_size, flake_y-flake_size,
-                     flake_x+flake_size, flake_y+flake_size], outline=0, width=1)
+        fiocco_x = x + (i * dimensione // 3)
+        fiocco_y = inizio_fiocco_y + dimensione // 3
+        dim_fiocco = dimensione // 8
+        disegno.ellipse([fiocco_x-dim_fiocco, fiocco_y-dim_fiocco, fiocco_x+dim_fio
+cco, fiocco_y+dim_fiocco], outline=0, width=1)
 
-def draw_thunder_icon(draw, x, y, size):
+def disegna_icona_temporale(disegno, x, y, dimensione):
     """Disegna un'icona del temporale"""
-    # Prima disegna una nuvola
-    draw_cloud_icon(draw, x, y, size * 2 // 3)
-
-    # Aggiungi fulmine
-    lightning_points = [
-        (x + size//2, y + size//2),  # Inizio
-        (x + size//3, y + size*2//3),  # Primo zigzag
-        (x + size//2, y + size*2//3),  # Punto medio
-        (x + size//3, y + size)   # Fine
+    disegna_icona_nuvola(disegno, x, y, dimensione * 2 // 3)
+    punti_fulmine = [
+        (x + dimensione//2, y + dimensione//2),
+        (x + dimensione//3, y + dimensione*2//3),
+        (x + dimensione//2, y + dimensione*2//3),
+        (x + dimensione//3, y + dimensione)
     ]
-    draw.line(lightning_points, fill=0, width=2)
+    disegno.line(punti_fulmine, fill=0, width=2)
 
-def draw_fog_icon(draw, x, y, size):
+def disegna_icona_nebbia(disegno, x, y, dimensione):
     """Disegna un'icona della nebbia"""
-    # Linee ondulate per rappresentare la nebbia
     for i in range(4):
-        y_pos = y + (i * size // 4)
-        points = [
+        y_pos = y + (i * dimensione // 4)
+        punti = [
             (x, y_pos),
-            (x + size//4, y_pos - size//8),
-            (x + size//2, y_pos),
-            (x + size*3//4, y_pos - size//8),
-            (x + size, y_pos)
+            (x + dimensione//4, y_pos - dimensione//8),
+            (x + dimensione//2, y_pos),
+            (x + dimensione*3//4, y_pos - dimensione//8),
+            (x + dimensione, y_pos)
         ]
-        draw.line(points, fill=0, width=2)
+        disegno.line(punti, fill=0, width=2)
 
-def draw_weather_icon(draw, x, y, size, weather_type):
+def disegna_icona_meteo(disegno, x, y, dimensione, tipo_meteo):
     """Funzione principale per disegnare l'icona del tempo appropriata"""
-    if 'pioggia' in weather_type or 'rain' in weather_type:
-        draw_rain_icon(draw, x, y, size)
-    elif 'neve' in weather_type or 'snow' in weather_type:
-        draw_snow_icon(draw, x, y, size)
-    elif 'nuvol' in weather_type or 'cloud' in weather_type:
-        draw_cloud_icon(draw, x, y, size)
-    elif 'nebbia' in weather_type or 'fog' in weather_type:
-        draw_fog_icon(draw, x, y, size)
-    elif 'temporale' in weather_type or 'thunder' in weather_type:
-        draw_thunder_icon(draw, x, y, size)
-    else:  # sereno/clear come default
-        draw_sun_icon(draw, x+size//2, y+size//2, size)
+    if 'pioggia' in tipo_meteo or 'rain' in tipo_meteo:
+        disegna_icona_pioggia(disegno, x, y, dimensione)
+    elif 'neve' in tipo_meteo or 'snow' in tipo_meteo:
+        disegna_icona_neve(disegno, x, y, dimensione)
+    elif 'nuvol' in tipo_meteo or 'cloud' in tipo_meteo:
+        disegna_icona_nuvola(disegno, x, y, dimensione)
+    elif 'nebbia' in tipo_meteo or 'fog' in tipo_meteo:
+        disegna_icona_nebbia(disegno, x, y, dimensione)
+    elif 'temporale' in tipo_meteo or 'thunder' in tipo_meteo:
+        disegna_icona_temporale(disegno, x, y, dimensione)
+    else:
+        disegna_icona_sole(disegno, x+dimensione//2, y+dimensione//2, dimensione)
 
-def draw_compass_rose(draw, x, y, radius):
+def disegna_rosa_venti(disegno, x, y, raggio):
     """Disegna una rosa dei venti dettagliata"""
-    # Cerchi concentrici
-    draw.ellipse([x-radius, y-radius, x+radius, y+radius], outline=0, width=1)
-    draw.ellipse([x-radius*0.7, y-radius*0.7, x+radius*0.7, y+radius*0.7], outline=0, width=1)
-
-    # Punti cardinali
-    directions = [
+    disegno.ellipse([x-raggio, y-raggio, x+raggio, y+raggio], outline=0, width=1)
+    disegno.ellipse([x-raggio*0.7, y-raggio*0.7, x+raggio*0.7, y+raggio*0.7], outli
+ne=0, width=1)
+    direzioni = [
         ('N', 0), ('NE', 45), ('E', 90), ('SE', 135),
         ('S', 180), ('SO', 225), ('O', 270), ('NO', 315)
     ]
-    font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 16)
+    carattere = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bol
+d.ttf', 16)
+    for direzione, angolo in direzioni:
+        angolo_rad = radians(angolo)
+        fine_x = x + cos(angolo_rad) * raggio
+        fine_y = y - sin(angolo_rad) * raggio
+        inizio_x = x + cos(angolo_rad) * (raggio * 0.3)
+        inizio_y = y - sin(angolo_rad) * (raggio * 0.3)
+        disegno.line([(inizio_x, inizio_y), (fine_x, fine_y)], fill=0, width=2 if a
+ngolo % 90 == 0 else 1)
+        testo_x = x + cos(angolo_rad) * (raggio * 1.2) - 8
+        testo_y = y - sin(angolo_rad) * (raggio * 1.2) - 8
+        disegno.text((testo_x, testo_y), direzione, font=carattere, fill=0)
 
-    for direction, angle in directions:
-        # Linee principali
-        rad_angle = radians(angle)
-        end_x = x + cos(rad_angle) * radius
-        end_y = y - sin(rad_angle) * radius
-        start_x = x + cos(rad_angle) * (radius * 0.3)
-        start_y = y - sin(rad_angle) * (radius * 0.3)
-        draw.line([(start_x, start_y), (end_x, end_y)], fill=0, width=2 if angle % 90 == 0 else 1)
-
-        # Testo
-        text_x = x + cos(rad_angle) * (radius * 1.2) - 8
-        text_y = y - sin(rad_angle) * (radius * 1.2) - 8
-        draw.text((text_x, text_y), direction, font=font, fill=0)
-
-def draw_wind_arrow(draw, x, y, radius, angle):
+def disegna_freccia_vento(disegno, x, y, raggio, angolo):
     """Disegna una freccia del vento stilizzata"""
-    rad_angle = radians(angle)
-    # Freccia principale
-    end_x = x + cos(rad_angle) * radius * 0.8
-    end_y = y - sin(rad_angle) * radius * 0.8
-    draw.line([(x, y), (end_x, end_y)], fill=0, width=2)
+    angolo_rad = radians(angolo)
+    fine_x = x + cos(angolo_rad) * raggio * 0.8
+    fine_y = y - sin(angolo_rad) * raggio * 0.8
+    disegno.line([(x, y), (fine_x, fine_y)], fill=0, width=2)
+    dim_freccia = raggio * 0.2
+    angolo_sinistro = angolo_rad + radians(150)
+    angolo_destro = angolo_rad - radians(150)
+    x_sinistro = fine_x + cos(angolo_sinistro) * dim_freccia
+    y_sinistro = fine_y - sin(angolo_sinistro) * dim_freccia
+    x_destro = fine_x + cos(angolo_destro) * dim_freccia
+    y_destro = fine_y - sin(angolo_destro) * dim_freccia
+    disegno.polygon([(fine_x, fine_y), (x_sinistro, y_sinistro), (x_destro, y_destr
+o)], fill=0)
 
-    # Punta della freccia
-    arrow_size = radius * 0.2
-    left_angle = rad_angle + radians(150)
-    right_angle = rad_angle - radians(150)
-    left_x = end_x + cos(left_angle) * arrow_size
-    left_y = end_y - sin(left_angle) * arrow_size
-    right_x = end_x + cos(right_angle) * arrow_size
-    right_y = end_y - sin(right_angle) * arrow_size
-    draw.polygon([(end_x, end_y), (left_x, left_y), (right_x, right_y)], fill=0)
+def disegna_sezione_crypto(disegno, x, y, dati_crypto, caratteri):
+    """Disegna una sezione crypto pulita e minimalista"""
+    larghezza_sezione = 300
 
-def get_weather():
+    if dati_crypto:
+        # Titolo della sezione (abbassato di 5px)
+        y_titolo = y + 20
+        disegno.text((x, y_titolo), "Crypto", font=caratteri['grande'], fill=0)
+
+        # BTC
+        y_btc = y_titolo + 60  # Spazio dopo il titolo
+        disegno.text((x, y_btc), "BTC", font=caratteri['normale'], fill=0)
+
+        # Prezzo BTC
+        prezzo_btc = f"{dati_crypto['prezzo_btc']:,}€"
+        x_prezzo_btc = x + larghezza_sezione - len(prezzo_btc) * 12
+        disegno.text((x_prezzo_btc, y_btc), prezzo_btc, font=caratteri['normale'],
+fill=0)
+
+        # Variazione BTC
+        variazione_btc = dati_crypto['variazione_btc']
+        simbolo_variazione = "▲" if variazione_btc >= 0 else "▼"
+        testo_variazione_btc = f"{simbolo_variazione}{abs(variazione_btc):.1f}%"
+        x_variazione_btc = x + 80
+        disegno.text((x_variazione_btc, y_btc), testo_variazione_btc, font=caratter
+i['normale'], fill=0)
+
+        # ETH
+        y_eth = y_btc + 45  # Spazio tra BTC ed ETH
+        disegno.text((x, y_eth), "ETH", font=caratteri['normale'], fill=0)
+
+        # Prezzo ETH
+        prezzo_eth = f"{dati_crypto['prezzo_eth']:,}€"
+        x_prezzo_eth = x + larghezza_sezione - len(prezzo_eth) * 12
+        disegno.text((x_prezzo_eth, y_eth), prezzo_eth, font=caratteri['normale'],
+fill=0)
+
+        # Variazione ETH
+        variazione_eth = dati_crypto['variazione_eth']
+        simbolo_variazione = "▲" if variazione_eth >= 0 else "▼"
+        testo_variazione_eth = f"{simbolo_variazione}{abs(variazione_eth):.1f}%"
+        x_variazione_eth = x + 80
+        disegno.text((x_variazione_eth, y_eth), testo_variazione_eth, font=caratter
+i['normale'], fill=0)
+    else:
+        disegno.text((x, y), "Dati crypto non disponibili", font=caratteri['normale
+'], fill=0)
+
+def ottieni_nome_vento(gradi):
+    """Restituisce il nome tradizionale italiano del vento"""
+    venti = [
+        "Tramontana",    # 0° (Nord)
+        "Grecale",       # 45° (Nord-Est)
+        "Levante",       # 90° (Est)
+        "Scirocco",      # 135° (Sud-Est)
+        "Mezzogiorno",   # 180° (Sud)
+        "Libeccio",      # 225° (Sud-Ovest)
+        "Ponente",       # 270° (Ovest)
+        "Maestrale"      # 315° (Nord-Ovest)
+    ]
+    indice = round(gradi / 45) % 8
+    return venti[indice]
+
+def ottieni_meteo():
     try:
-        # Richiesta meteo corrente
-        url = f"http://api.openweathermap.org/data/2.5/weather?q={CITY}&appid={OPENWEATHER_API_KEY}&units=metric&lang=it"
-        response = requests.get(url)
-        data = response.json()
-
-        # Richiesta previsioni
-        forecast_url = f"http://api.openweathermap.org/data/2.5/forecast?q={CITY}&appid={OPENWEATHER_API_KEY}&units=metric&lang=it"
-        forecast_response = requests.get(forecast_url)
-        forecast_data = forecast_response.json()
+        url = f"http://api.openweathermap.org/data/2.5/weather?q={CITTA}&appid={CHI
+AVE_OPENWEATHER}&units=metric&lang=it"
+        risposta = requests.get(url)
+        dati = risposta.json()
 
         return {
-            'temp': round(data['main']['temp']),
-            'feels_like': round(data['main']['feels_like']),
-            'temp_min': round(data['main']['temp_min']),
-            'temp_max': round(data['main']['temp_max']),
-            'humidity': data['main']['humidity'],
-            'pressure': data['main']['pressure'],
-            'description': data['weather'][0]['description'],
-            'wind_speed': round(data['wind']['speed'] * 3.6),
-            'wind_deg': data['wind'].get('deg', 0),
-            'clouds': data['clouds']['all'],
-            'sunrise': datetime.fromtimestamp(data['sys']['sunrise']).strftime('%H:%M'),
-            'sunset': datetime.fromtimestamp(data['sys']['sunset']).strftime('%H:%M'),
-            'visibility': data.get('visibility', 0) / 1000,
-            'forecast': forecast_data['list'][:2]  # Solo le prime 2 previsioni
+            'temperatura': round(dati['main']['temp']),
+            'temperatura_percepita': round(dati['main']['feels_like']),
+            'temp_min': round(dati['main']['temp_min']),
+            'temp_max': round(dati['main']['temp_max']),
+            'umidita': dati['main']['humidity'],
+            'pressione': dati['main']['pressure'],
+            'descrizione': dati['weather'][0]['description'],
+            'velocita_vento': round(dati['wind']['speed'] * 3.6),
+            'direzione_vento': dati['wind'].get('deg', 0),
+            'nuvolosita': dati['clouds']['all'],
+            'alba': datetime.fromtimestamp(dati['sys']['sunrise']).strftime('%H:%M'
+),
+            'tramonto': datetime.fromtimestamp(dati['sys']['sunset']).strftime('%H:
+%M'),
+            'visibilita': dati.get('visibility', 0) / 1000,
         }
     except Exception as e:
         logging.error(f"Errore nel recupero dati meteo: {e}")
         return None
 
-def get_system_stats():
-    cpu_temp = None
+def ottieni_prezzi_crypto():
     try:
-        with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
-            cpu_temp = round(float(f.read()) / 1000, 1)
-    except:
-        cpu_temp = "N/A"
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&v
+s_currencies=eur&include_24hr_change=true"
+        risposta = requests.get(url)
+        dati = risposta.json()
+        return {
+            'prezzo_btc': round(dati['bitcoin']['eur']),
+            'variazione_btc': round(dati['bitcoin']['eur_24h_change'], 2),
+            'prezzo_eth': round(dati['ethereum']['eur']),
+            'variazione_eth': round(dati['ethereum']['eur_24h_change'], 2)
+        }
+    except Exception as e:
+        logging.error(f"Errore nel recupero dati crypto: {e}")
+        return None
 
-    return {
-        'cpu_percent': psutil.cpu_percent(),
-        'cpu_temp': cpu_temp,
-        'memory': psutil.virtual_memory().percent,
-        'disk': psutil.disk_usage('/').percent,
-        'uptime': round(float(open('/proc/uptime').read().split()[0]) / 3600, 1)
-    }
 
 try:
     # Inizializzazione
-    epd = epd7in5_V2.EPD()
-    epd.init()
-    epd.Clear()
+    display = epd7in5_V2.EPD()
+    display.init()
+    display.Clear()
 
     # Creazione immagine
-    image = Image.new('1', (epd.width, epd.height), 255)
-    draw = ImageDraw.Draw(image)
+    immagine = Image.new('1', (display.width, display.height), 255)
+    disegno = ImageDraw.Draw(immagine)
 
     # Font
-    font_digital = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf', 96)
-    font_large = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 36)
-    font_normal = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 24)
-    font_small = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 18)
+    carattere_digitale = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaV
+uSansMono-Bold.ttf', 96)
+    carattere_grande = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuS
+ans-Bold.ttf', 36)
+    carattere_normale = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVu
+Sans.ttf', 24)
+    carattere_piccolo = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVu
+Sans.ttf', 18)
+
+    caratteri = {
+        'digitale': carattere_digitale,
+        'grande': carattere_grande,
+        'normale': carattere_normale,
+        'piccolo': carattere_piccolo
+    }
 
     # Recupero dati
-    weather = get_weather()
-    stats = get_system_stats()
+    meteo = ottieni_meteo()
+    crypto = ottieni_prezzi_crypto()
+   # statistiche = ottieni_statistiche_sistema()
 
-    if weather:
+    if meteo:
+        # Calcolo la posizione della linea centrale
+        linea_centrale = (display.width//2) - 5  # Spostiamo la linea di 5px a sini
+stra
+
         # Divisione schermo in due parti
-        draw.line([(epd.width//2, 20), (epd.width//2, epd.height-60)], fill=0, width=1)
+        disegno.line([(linea_centrale, 20), (linea_centrale, display.height-60)], f
+ill=0, width=1)
 
         # Parte sinistra - Condizioni attuali
-        x, y = 40, 40
+        x, y = 30, 40
+        disegna_icona_meteo(disegno, x, y, 120, meteo['descrizione'].lower())
+        disegno.text((x + 160, y + 10), f"{meteo['temperatura']}°", font=carattere_
+digitale, fill=0)
 
-        # Icona meteo grande e temperatura accanto
-        draw_weather_icon(draw, x, y, 120, weather['description'].lower())
-        draw.text((x + 160, y + 10), f"{weather['temp']}°", font=font_digital, fill=0)
-
-        # Descrizione condizioni
         y += 140
-        draw.text((x, y), weather['description'].capitalize(), font=font_large, fill=0)
+        disegno.text((x, y), meteo['descrizione'].capitalize(), font=carattere_gran
+de, fill=0)
 
-        # Dettagli secondari
         y += 50
-        details = [
-            f"Percepita: {weather['feels_like']}°",
-            f"Min: {weather['temp_min']}° · Max: {weather['temp_max']}°",
-            f"Umidità: {weather['humidity']}%",
-            f"Pressione: {weather['pressure']} hPa",
-            f"Visibilità: {weather['visibility']} km",
-            f"Alba: {weather['sunrise']} · Tramonto: {weather['sunset']}"
+        dettagli = [
+            f"Percepita: {meteo['temperatura_percepita']}°",
+            f"Min: {meteo['temp_min']}° · Max: {meteo['temp_max']}°",
+            f"Umidità: {meteo['umidita']}%",
+            f"Pressione: {meteo['pressione']} hPa",
+            f"Visibilità: {meteo['visibilita']} km",
+            f"Alba: {meteo['alba']} · Tramonto: {meteo['tramonto']}"
         ]
-
-        for detail in details:
-            draw.text((x, y), detail, font=font_normal, fill=0)
+        for dettaglio in dettagli:
+            disegno.text((x, y), dettaglio, font=carattere_normale, fill=0)
             y += 30
 
-        # Parte destra - Rosa dei venti e previsioni
-        x = epd.width//2 + 40
+        # Parte destra - Rosa dei venti e crypto
+        x = linea_centrale + 40
         y = 40
+        bussola_x = x + 150
+        bussola_y = y + 80
+        disegna_rosa_venti(disegno, bussola_x, bussola_y, 80)
+        disegna_freccia_vento(disegno, bussola_x, bussola_y, 80, meteo['direzione_v
+ento'])
 
-        # Rosa dei venti grande
-        compass_x = x + 150
-        compass_y = y + 100
-        draw_compass_rose(draw, compass_x, compass_y, 80)
-        draw_wind_arrow(draw, compass_x, compass_y, 80, weather['wind_deg'])
+        testo_vento = f"Vento: {meteo['velocita_vento']} km/h {ottieni_nome_vento(m
+eteo['direzione_vento'])}"
+        font_vento = carattere_piccolo
+        bbox_testo = disegno.textbbox((0, 0), testo_vento, font=font_vento)
+        larghezza_testo = bbox_testo[2] - bbox_testo[0]
+        x_vento = bussola_x - (larghezza_testo // 2)
+        y_vento = y + 200
+        disegno.text((x_vento, y_vento), testo_vento, font=font_vento, fill=0)
 
-# Velocità e nome del vento sotto la rosa
-        wind_name = get_wind_name(weather['wind_deg'])
-        wind_text = f"Vento: {weather['wind_speed']} km/h - {wind_name}"
-        draw.text((x + 1, y + 200), wind_text, font=font_normal, fill=0)
+        # Sezione Crypto
+        disegna_sezione_crypto(disegno, x, 250, crypto, caratteri)
 
-
-# Previsioni compatte
-        y = 280
-        draw.text((x, y), "Previsioni:", font=font_large, fill=0)
-        y += 50
-        x_offset = 0
-
-        # Solo le prime 2 previsioni
-        for forecast in weather['forecast'][:2]:
-            temp = round(forecast['main']['temp'])
-            time = datetime.fromtimestamp(forecast['dt']).strftime('%H:%M')
-            prob_rain = forecast.get('pop', 0) * 100
-
-            # Icona meteo
-            draw_weather_icon(draw, x + x_offset, y, 48, forecast['weather'][0]['description'].lower())
-
-            # Probabilità pioggia accanto all'icona
-            if prob_rain > 0:
-                draw.text((x + x_offset + 55, y + 15), f"{round(prob_rain)}%", font=font_small, fill=0)
-
-            # Ora e temperatura sulla stessa riga
-            draw.text((x + x_offset, y + 60), f"{time} • {temp}°", font=font_normal, fill=0)
-
-            x_offset += 150  # Spazio tra le previsioni
-
-    # Barra di sistema in basso
-    system_y = epd.height - 40
-    draw.line([(20, system_y-10), (epd.width-20, system_y-10)], fill=0, width=1)
-
-    x = 40
-    stats_list = [
-        ("CPU", stats['cpu_percent']),
-        ("RAM", stats['memory']),
-        ("DISCO", stats['disk'])
-    ]
-
-    for label, value in stats_list:
-        text = f"{label}: {value}%"
-        draw.text((x, system_y), text, font=font_small, fill=0)
-        x += 200
-
-    # Data e ora
-    current_time = datetime.now().strftime("%d/%m/%Y %H:%M")
-    draw.text((epd.width-200, system_y), current_time, font=font_small, fill=0)
+        # Barra notizie in basso
+        y_notizie = display.height - 40
+        disegna_barra_notizie(disegno, y_notizie, display.width, caratteri)
 
     # Visualizzazione
-    epd.display(epd.getbuffer(image))
-    epd.sleep()
+    display.display(display.getbuffer(immagine))
+    display.sleep()
 
 except Exception as e:
     logging.error(f'Errore: {e}')
