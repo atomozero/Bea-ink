@@ -11,9 +11,9 @@ Stazione meteo per display E-Paper, progettata specificamente per Venezia. Quest
   - Rosa dei venti completa con indicatori direzionali
   - Dati su umidità, pressione e visibilità
   - Orari di alba e tramonto
-- Sezione Cryptocurrency:
+- Sezione Cryptocurrency (aggiornata ogni 5 minuti):
   - Prezzi in tempo reale di Bitcoin ed Ethereum
-  - Variazioni percentuali nelle ultime 24 ore
+  - Variazioni percentuali nelle ultime 24 ore (dati da CoinGecko)
 - Feed notizie:
   - Ultime notizie da ANSA
   - Aggiornamento automatico ogni 5 minuti
