@@ -1,7 +1,7 @@
 # Bea-ink
 Stazione meteo per display E-Paper, progettata specificamente per Venezia. Questo progetto combina dati meteo in tempo reale da OpenWeatherMap con icone meteo artistiche e una dettagliata rosa dei venti su un display E-Ink.
 
-![Anteprima Bea-ink](Bea-ink-2.jpg)
+![Anteprima Bea-ink](Bea-Ink-2.jpg)
 
 ## Caratteristiche
 - Visualizzazione dati meteo in tempo reale:
